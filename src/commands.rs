@@ -1,9 +1,11 @@
+use std::io::Read;
 use std::io::Write;
 use std::{
     fs::{self, read},
     path::Path,
 };
 
+use flate2::read::ZlibDecoder;
 use flate2::{Compression, write::ZlibEncoder};
 use sha1::{Digest, Sha1};
 
@@ -15,7 +17,7 @@ pub fn init() -> anyhow::Result<()> {
             fs::canonicalize("root")?
         );
     }
-    fs::create_dir_all(root.join("object"))?;
+    fs::create_dir_all(root.join("objects"))?;
     fs::create_dir_all(root.join("refs"))?;
     fs::write(root.join("HEAD"), "ref: refs/heads/master\n")?;
     println!(
@@ -44,7 +46,7 @@ pub fn hash_object(file_path: &Path, write: bool) -> anyhow::Result<String> {
     Ok(hash)
 }
 fn store_object(hash: &str, header: &str, content: &[u8]) -> anyhow::Result<()> {
-    let rgit_dir = Path::new(".rgit/object");
+    let rgit_dir = Path::new(".rgit/objects");
     let (dir, file) = hash.split_at(2);
     let object_path = rgit_dir.join(dir);
     fs::create_dir_all(&object_path)?;
@@ -57,5 +59,29 @@ fn store_object(hash: &str, header: &str, content: &[u8]) -> anyhow::Result<()> 
     encoder.write_all(header.as_bytes())?;
     encoder.write_all(content)?;
     encoder.finish()?;
+    Ok(())
+}
+
+pub fn cat_file(hash: &str, pretty_print: bool) -> anyhow::Result<()> {
+    if !pretty_print {
+        anyhow::bail!("缺少参数-p 打印");
+    }
+    let (dir, file) = hash.split_at(2);
+    let path = Path::new(".rgit/objects").join(dir).join(file);
+    if !path.exists() {
+        anyhow::bail!("不存在的对象哈希:{}", hash);
+    }
+    let f = fs::File::open(path)?;
+    let mut decoder = ZlibDecoder::new(f);
+    let mut decoded_data = Vec::new();
+    decoder.read_to_end(&mut decoded_data)?;
+
+    if let Some(null_pos) = decoded_data.iter().position(|&b| b == 0) {
+        let content = &decoded_data[null_pos + 1..];
+        std::io::stdout().write_all(content)?;
+    } else {
+        anyhow::bail!("损坏的对象格式,无法找到 Header 结束标志");
+    }
+
     Ok(())
 }

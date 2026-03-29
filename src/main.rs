@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use self::commands::hash_object;
+use self::commands::{cat_file, hash_object};
 mod commands;
 
 #[derive(Parser)]
@@ -20,6 +20,11 @@ enum Commands {
         #[arg(short = 'w')]
         write: bool,
     },
+    CatFile {
+        #[arg(short = 'p')]
+        pretty_print: bool,
+        object_hash: String,
+    },
 }
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -30,6 +35,12 @@ fn main() -> anyhow::Result<()> {
         Commands::HashObject { file, write } => {
             let sha1 = hash_object(&file, write)?;
             println!("{}", sha1);
+        }
+        Commands::CatFile {
+            pretty_print,
+            object_hash,
+        } => {
+            cat_file(&object_hash, pretty_print)?;
         }
     }
     Ok(())
