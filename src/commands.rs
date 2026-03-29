@@ -1,3 +1,4 @@
+use std::fmt::format;
 use std::io::Read;
 use std::io::Write;
 use std::{
@@ -5,6 +6,7 @@ use std::{
     path::Path,
 };
 
+use anyhow::Ok;
 use flate2::read::ZlibDecoder;
 use flate2::{Compression, write::ZlibEncoder};
 use sha1::{Digest, Sha1};
@@ -84,4 +86,70 @@ pub fn cat_file(hash: &str, pretty_print: bool) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+fn write_tree(dir: &Path) -> anyhow::Result<String> {
+    let mut entries = Vec::new();
+
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_name = entry.file_name().to_str().unwrap().to_string();
+        if file_name.starts_with('.') {
+            continue;
+        }
+
+        if path.is_dir() {
+            let hash = write_tree(&path)?;
+            entries.push((format!("40000 {}", file_name), hex_to_bytes(&hash)?));
+        } else {
+            let hash = hash_object(&path, true)?;
+            entries.push((format!("100644 {}", file_name), hex_to_bytes(&hash)?));
+        }
+    }
+
+    entries.sort_by(|a, b| {
+        let (mode_a, name_a) = a.0.split_once(' ').unwrap();
+        let (mode_b, name_b) = b.0.split_once(' ').unwrap();
+        let final_a = if mode_a == "40000" {
+            format!("{}/", name_a)
+        } else {
+            name_a.to_string()
+        };
+        let final_b = if mode_b == "40000" {
+            format!("{}/", name_b)
+        } else {
+            name_b.to_string()
+        };
+        final_a.cmp(&final_b)
+    });
+
+    let mut tree_content = Vec::new();
+    for (mode_and_name, hash_bytes) in entries {
+        tree_content.extend_from_slice(mode_and_name.as_bytes());
+        tree_content.push(0);
+        tree_content.extend_from_slice(&hash_bytes);
+    }
+    store_generic_object("tree", &tree_content)
+}
+fn store_generic_object(obj_type: &str, content: &[u8]) -> anyhow::Result<String> {
+    let header = format!("{} {}\0", obj_type, content.len());
+    let mut hasher = Sha1::new();
+    hasher.update(header.as_bytes());
+    hasher.update(content);
+    let hash = hex::encode(hasher.finalize());
+    let (dir, file) = hash.split_at(2);
+    let object_path = Path::new(".rgit/objects").join(dir);
+    fs::create_dir_all(&object_path)?;
+
+    let f = fs::File::create(object_path.join(file))?;
+    let mut encoder = ZlibEncoder::new(f, Compression::default());
+    encoder.write_all(header.as_bytes())?;
+    encoder.write_all(content)?;
+    encoder.finish()?;
+
+    Ok(hash)
+}
+fn hex_to_bytes(hex: &str) -> anyhow::Result<Vec<u8>> {
+    let bytes = hex::decode(hex)?;
+    Ok(bytes)
 }
