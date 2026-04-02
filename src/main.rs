@@ -1,11 +1,13 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
 use self::commands::cat_file;
-use self::object::{hash_object, write_tree};
+use self::index::Index;
+use self::object::{hash_object, write_tree_from_index};
 mod commands;
 mod hash;
+mod index;
 mod object;
 mod storage;
 
@@ -30,6 +32,12 @@ enum Commands {
         object_hash: String,
     },
     WriteTree,
+    UpdateIndex {
+        path: PathBuf,
+        /// Mode (e.g., 100644 for regular file, 100755 for executable)
+        #[arg(short = 'm', long, default_value = "100644")]
+        mode: u32,
+    },
 }
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -48,7 +56,23 @@ fn main() -> anyhow::Result<()> {
             cat_file(&object_hash, pretty_print)?;
         }
         Commands::WriteTree => {
-            write_tree(Path::new(".rgit"))?;
+            let index = Index::load()?;
+            let sha1 = write_tree_from_index(&index)?;
+            println!("{}", sha1);
+        }
+        Commands::UpdateIndex { path, mode } => {
+            let mut index = Index::load()?;
+            // Hash the file and get its SHA-1
+            let sha1_str = hash_object(&path, true)?;
+            let sha1_bytes = hex::decode(&sha1_str)?;
+            let mut sha1_arr = [0u8; 20];
+            sha1_arr.copy_from_slice(&sha1_bytes);
+
+            // Convert path to relative string
+            let path_str = path.to_string_lossy().to_string();
+            index.add(&path_str, mode, sha1_arr);
+            index.save()?;
+            println!("{}", sha1_str);
         }
     }
     Ok(())
