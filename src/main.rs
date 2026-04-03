@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use self::commands::cat_file;
+use self::commands::{cat_file, log};
 use self::index::Index;
 use self::object::{commit_tree, hash_object, write_tree_from_index};
 use self::refs::{head_ref, resolve_ref, set_head, update_ref};
@@ -66,6 +66,12 @@ enum Commands {
     },
     /// Show what HEAD currently points to (resolved to commit hash)
     ShowRef,
+    /// Show commit history starting from HEAD or a given commit
+    Log {
+        /// Start from this commit hash or ref (defaults to HEAD)
+        #[arg(default_value = "HEAD")]
+        start: String,
+    },
 }
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -127,12 +133,23 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
                 None => {
-                    // detached HEAD
                     match resolve_ref("HEAD")? {
                         Some(hash) => println!("HEAD (detached) -> {}", hash),
                         None => println!("HEAD 未设置"),
                     }
                 }
+            }
+        }
+        Commands::Log { start } => {
+            // 如果 start 是 "HEAD" 或 ref 名称，先解析为 commit hash
+            let hash = if start.len() == 40 && start.chars().all(|c| c.is_ascii_hexdigit()) {
+                Some(start.clone())
+            } else {
+                resolve_ref(&start)?
+            };
+            match hash {
+                Some(h) => log(&h)?,
+                None => eprintln!("没有提交历史"),
             }
         }
     }
