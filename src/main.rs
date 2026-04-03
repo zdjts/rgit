@@ -4,11 +4,13 @@ use clap::{Parser, Subcommand};
 
 use self::commands::cat_file;
 use self::index::Index;
-use self::object::{hash_object, write_tree_from_index};
+use self::object::{commit_tree, hash_object, write_tree_from_index};
+use self::refs::{head_ref, resolve_ref, set_head, update_ref};
 mod commands;
 mod hash;
 mod index;
 mod object;
+mod refs;
 mod storage;
 
 #[derive(Parser)]
@@ -38,6 +40,32 @@ enum Commands {
         #[arg(short = 'm', long, default_value = "100644")]
         mode: u32,
     },
+    CommitTree {
+        tree: String,
+        /// Parent commit hash(es)
+        #[arg(short = 'p', long)]
+        parent: Vec<String>,
+        /// Author information "Name <email>"
+        #[arg(short, long)]
+        author: String,
+        /// Commit message
+        #[arg(short, long)]
+        message: String,
+    },
+    /// Update a ref to point to a commit hash
+    UpdateRef {
+        /// Ref name, e.g. refs/heads/master
+        refname: String,
+        /// Commit hash to point to
+        hash: String,
+    },
+    /// Set HEAD to a symbolic ref or detached commit hash
+    SetHead {
+        /// A ref name (refs/heads/master) or a commit hash for detached HEAD
+        target: String,
+    },
+    /// Show what HEAD currently points to (resolved to commit hash)
+    ShowRef,
 }
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -73,6 +101,39 @@ fn main() -> anyhow::Result<()> {
             index.add(&path_str, mode, sha1_arr);
             index.save()?;
             println!("{}", sha1_str);
+        }
+        Commands::CommitTree {
+            tree,
+            parent,
+            author,
+            message,
+        } => {
+            let sha1 = commit_tree(&tree, &parent, &author, &message)?;
+            println!("{}", sha1);
+        }
+        Commands::UpdateRef { refname, hash } => {
+            update_ref(&refname, &hash)?;
+        }
+        Commands::SetHead { target } => {
+            set_head(&target)?;
+        }
+        Commands::ShowRef => {
+            match head_ref()? {
+                Some(refname) => {
+                    print!("HEAD -> {}", refname);
+                    match resolve_ref(&refname)? {
+                        Some(hash) => println!(" -> {}", hash),
+                        None => println!(" (未初始化)"),
+                    }
+                }
+                None => {
+                    // detached HEAD
+                    match resolve_ref("HEAD")? {
+                        Some(hash) => println!("HEAD (detached) -> {}", hash),
+                        None => println!("HEAD 未设置"),
+                    }
+                }
+            }
         }
     }
     Ok(())

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs::read;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::hash::hex_to_bytes;
 use crate::index::Index;
@@ -99,4 +100,41 @@ fn write_tree_at_prefix(index: &Index, prefix: &str) -> anyhow::Result<String> {
     }
 
     store_generic_object("tree", &tree_content)
+}
+
+pub fn commit_tree(
+    tree_hash: &str,
+    parent_hashes: &[String],
+    author: &str,
+    message: &str,
+) -> anyhow::Result<String> {
+    // 获取当前时间戳和时区
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let timezone = "+0800"; // 简化处理，使用固定时区
+
+    // 构建 commit 内容
+    let mut content = String::new();
+
+    // tree 行
+    content.push_str(&format!("tree {}\n", tree_hash));
+
+    // parent 行 (可以有多个)
+    for parent in parent_hashes {
+        content.push_str(&format!("parent {}\n", parent));
+    }
+
+    // author 行
+    content.push_str(&format!("author {} {} {}\n", author, now, timezone));
+
+    // committer 行
+    content.push_str(&format!("committer {} {} {}\n", author, now, timezone));
+
+    // 空行 + 提交信息
+    content.push('\n');
+    content.push_str(message);
+
+    store_generic_object("commit", content.as_bytes())
 }
