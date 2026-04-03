@@ -8,6 +8,56 @@ use crate::index::Index;
 use crate::storage::{read_object, store_generic_object, store_object};
 use sha1::{Digest, Sha1};
 
+/// 递归展开一个 tree 对象，返回 path -> sha1_hex 的扁平映射
+/// prefix 为当前路径前缀，根调用时传 ""
+pub fn flatten_tree(tree_hash: &str, prefix: &str) -> anyhow::Result<BTreeMap<String, String>> {
+    let (obj_type, content) = read_object(tree_hash)?;
+    if obj_type != "tree" {
+        anyhow::bail!("对象 {} 类型为 {}，不是 tree", tree_hash, obj_type);
+    }
+
+    let mut result = BTreeMap::new();
+    let mut offset = 0;
+
+    while offset < content.len() {
+        // 格式: "<mode> <name>\0<20-byte-sha1>"
+        let null_pos = content[offset..]
+            .iter()
+            .position(|&b| b == 0)
+            .ok_or_else(|| anyhow::anyhow!("tree 条目格式损坏"))?;
+
+        let header = std::str::from_utf8(&content[offset..offset + null_pos])?;
+        let (mode, name) = header
+            .split_once(' ')
+            .ok_or_else(|| anyhow::anyhow!("tree 条目 header 无效: {}", header))?;
+
+        offset += null_pos + 1;
+
+        if offset + 20 > content.len() {
+            anyhow::bail!("tree 条目 sha1 截断");
+        }
+        let sha1_bytes = &content[offset..offset + 20];
+        let sha1_hex = hex::encode(sha1_bytes);
+        offset += 20;
+
+        let full_path = if prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{}/{}", prefix, name)
+        };
+
+        if mode == "40000" {
+            // 子目录，递归展开
+            let sub = flatten_tree(&sha1_hex, &full_path)?;
+            result.extend(sub);
+        } else {
+            result.insert(full_path, sha1_hex);
+        }
+    }
+
+    Ok(result)
+}
+
 /// 解析后的 commit 对象
 #[derive(Debug)]
 pub struct CommitObject {

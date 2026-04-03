@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// 简化的 Index 条目
 #[derive(Debug, Clone)]
 pub struct IndexEntry {
-    pub mtime: u64,     // 修改时间 (秒级时间戳)
+    pub mtime: u64,     // 修改时间（纳秒级时间戳，兼顾亚秒精度）
     pub mode: u32,      // 文件模式 (100644 或 100755)
     pub sha1: [u8; 20], // 对象 SHA-1
     pub path: String,   // 文件路径
@@ -148,7 +148,7 @@ impl Index {
         let mtime = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_secs();
+            .as_nanos() as u64;  // 纳秒精度
         self.entries.insert(
             path.to_string(),
             IndexEntry {

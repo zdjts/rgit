@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use self::commands::{cat_file, log};
+use self::commands::{cat_file, log, status};
 use self::index::Index;
 use self::object::{commit_tree, hash_object, write_tree_from_index};
 use self::refs::{head_ref, resolve_ref, set_head, update_ref};
@@ -72,6 +72,8 @@ enum Commands {
         #[arg(default_value = "HEAD")]
         start: String,
     },
+    /// Show working tree status
+    Status,
 }
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -151,6 +153,9 @@ fn main() -> anyhow::Result<()> {
                 Some(h) => log(&h)?,
                 None => eprintln!("没有提交历史"),
             }
+        }
+        Commands::Status => {
+            status()?;
         }
     }
     Ok(())
