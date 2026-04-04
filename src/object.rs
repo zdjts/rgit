@@ -60,6 +60,7 @@ pub fn flatten_tree(tree_hash: &str, prefix: &str) -> anyhow::Result<BTreeMap<St
 
 /// 解析后的 commit 对象
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct CommitObject {
     pub hash: String,
     pub tree: String,

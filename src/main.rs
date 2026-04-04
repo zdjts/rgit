@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use self::commands::{cat_file, log, status};
+use self::commands::{add, cat_file, checkout, log, rm, status};
 use self::index::Index;
 use self::object::{commit_tree, hash_object, write_tree_from_index};
 use self::refs::{head_ref, resolve_ref, set_head, update_ref};
@@ -74,6 +74,26 @@ enum Commands {
     },
     /// Show working tree status
     Status,
+    /// Restore working tree files from a tree/commit/ref
+    Checkout {
+        /// Tree hash, commit hash, or ref (e.g. refs/heads/master, HEAD)
+        target: String,
+    },
+    /// Add file(s) to the index
+    Add {
+        /// Files or directories to stage
+        #[arg(required = true)]
+        paths: Vec<String>,
+    },
+    /// Remove file(s) from the index
+    Rm {
+        /// Files or directories to remove
+        #[arg(required = true)]
+        paths: Vec<String>,
+        /// Only remove from index, keep the working tree file
+        #[arg(long)]
+        cached: bool,
+    },
 }
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -156,6 +176,15 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Status => {
             status()?;
+        }
+        Commands::Checkout { target } => {
+            checkout(&target)?;
+        }
+        Commands::Add { paths } => {
+            add(&paths)?;
+        }
+        Commands::Rm { paths, cached } => {
+            rm(&paths, cached)?;
         }
     }
     Ok(())

@@ -7,7 +7,7 @@ use std::os::unix::fs::MetadataExt;
 use std::{fs, path::Path};
 
 use crate::index::Index;
-use crate::object::{flatten_tree, read_commit, CommitObject};
+use crate::object::{CommitObject, flatten_tree, read_commit};
 use crate::refs::resolve_ref;
 
 pub fn init() -> anyhow::Result<()> {
@@ -256,7 +256,8 @@ pub fn status() -> anyhow::Result<()> {
     }
 
     // ── 7. 输出 ──────────────────────────────────────────────────────────
-    let has_staged = !staged_new.is_empty() || !staged_modified.is_empty() || !staged_deleted.is_empty();
+    let has_staged =
+        !staged_new.is_empty() || !staged_modified.is_empty() || !staged_deleted.is_empty();
     let has_unstaged = !unstaged_modified.is_empty() || !unstaged_deleted.is_empty();
 
     if has_staged {
@@ -314,4 +315,196 @@ fn file_sha1_differs(path: &str, index_sha1: &[u8; 20]) -> anyhow::Result<bool> 
     hasher.update(&content);
     let disk_sha1: [u8; 20] = hasher.finalize().into();
     Ok(disk_sha1 != *index_sha1)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// checkout
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 将 commit 或 tree 对象还原到工作目录，同步更新 Index。
+/// target 可以是 commit hash、tree hash 或 ref 名称（如 refs/heads/master）。
+pub fn checkout(target: &str) -> anyhow::Result<()> {
+    use crate::storage::read_object;
+
+    // 解析 target → tree hash
+    let tree_hash = resolve_target_to_tree(target)?;
+
+    // 展开 tree 为扁平 path→sha1 映射
+    let tree_files = flatten_tree(&tree_hash, "")?;
+
+    // 加载当前 Index，用于判断哪些文件需要更新
+    let mut index = Index::load()?;
+
+    // ── 1. 写出 tree 中的所有文件 ────────────────────────────────────────
+    for (path, sha1_hex) in &tree_files {
+        let (obj_type, content) = read_object(sha1_hex)?;
+        if obj_type != "blob" {
+            anyhow::bail!("checkout: 期望 blob，得到 {} ({})", obj_type, sha1_hex);
+        }
+
+        // 创建父目录
+        let disk_path = Path::new(path);
+        if let Some(parent) = disk_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)?;
+            }
+        }
+
+        // 写入文件内容
+        fs::write(disk_path, &content)?;
+        println!("restored: {}", path);
+
+        // 更新 Index 条目（mode 固定为 100644；checkout 不保留可执行位，后续可扩展）
+        let mut sha1_arr = [0u8; 20];
+        sha1_arr.copy_from_slice(&hex::decode(sha1_hex)?);
+        index.add(path, 100644, sha1_arr);
+    }
+
+    // ── 2. 清理 Index 中有但 tree 中没有的条目（并删除对应磁盘文件）────
+    let paths_to_remove: Vec<String> = index
+        .entries
+        .keys()
+        .filter(|p| !tree_files.contains_key(*p))
+        .cloned()
+        .collect();
+
+    for path in paths_to_remove {
+        let disk_path = Path::new(&path);
+        if disk_path.exists() {
+            fs::remove_file(disk_path)?;
+            println!("removed:  {}", path);
+        }
+        index.remove(&path);
+    }
+
+    index.save()?;
+    Ok(())
+}
+
+/// 将 target（commit hash / tree hash / ref）解析为 tree hash
+fn resolve_target_to_tree(target: &str) -> anyhow::Result<String> {
+    use crate::storage::read_object;
+
+    // 先尝试作为 ref 解析（如 HEAD、refs/heads/master）
+    let hash = if target.len() == 40 && target.chars().all(|c| c.is_ascii_hexdigit()) {
+        target.to_string()
+    } else {
+        resolve_ref(target)?.ok_or_else(|| anyhow::anyhow!("无法解析 ref: {}", target))?
+    };
+
+    // 判断对象类型
+    let (obj_type, _) = read_object(&hash)?;
+    match obj_type.as_str() {
+        "tree" => Ok(hash),
+        "commit" => {
+            let commit = read_commit(&hash)?;
+            Ok(commit.tree)
+        }
+        other => anyhow::bail!("checkout 不支持的对象类型: {}", other),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// add
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 将一组路径加入 Index（支持文件和目录；目录会递归暂存所有子文件）。
+pub fn add(paths: &[String]) -> anyhow::Result<()> {
+    let mut index = Index::load()?;
+    let mut staged = 0usize;
+
+    for raw_path in paths {
+        let path = Path::new(raw_path);
+        if !path.exists() {
+            anyhow::bail!("路径不存在: {}", raw_path);
+        }
+        collect_and_stage(path, raw_path, &mut index, &mut staged)?;
+    }
+
+    index.save()?;
+    println!("已暂存 {} 个文件", staged);
+    Ok(())
+}
+
+/// 递归收集路径下所有文件并写入 Index
+fn collect_and_stage(
+    path: &Path,
+    rel: &str,
+    index: &mut Index,
+    count: &mut usize,
+) -> anyhow::Result<()> {
+    use crate::storage::store_object;
+    use sha1::{Digest, Sha1};
+
+    if path.is_dir() {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            // 跳过 .rgit 和隐藏目录
+            if name.starts_with('.') {
+                continue;
+            }
+            let child_rel = format!("{}/{}", rel, name);
+            collect_and_stage(&entry.path(), &child_rel, index, count)?;
+        }
+    } else {
+        // 读取文件，写入 object store，更新 Index
+        let content = fs::read(path)?;
+        let header = format!("blob {}\0", content.len());
+        let mut hasher = Sha1::new();
+        hasher.update(header.as_bytes());
+        hasher.update(&content);
+        let sha1_hex = hex::encode(hasher.finalize());
+
+        store_object(&sha1_hex, &header, &content)?;
+
+        let mut sha1_arr = [0u8; 20];
+        sha1_arr.copy_from_slice(&hex::decode(&sha1_hex)?);
+
+        // 保留已有条目的 mode；新文件默认 100644
+        let mode = index.entries.get(rel).map(|e| e.mode).unwrap_or(100644);
+
+        index.add(rel, mode, sha1_arr);
+        *count += 1;
+    }
+    Ok(())
+}
+
+/// 从 Index 中移除文件。
+/// cached=true  → 只移除 Index 条目，保留磁盘文件（等同 git rm --cached）
+/// cached=false → 同时删除磁盘文件
+pub fn rm(paths: &[String], cached: bool) -> anyhow::Result<()> {
+    let mut index = Index::load()?;
+    let mut removed = 0usize;
+
+    for raw_path in paths {
+        // 支持目录：移除所有以 raw_path/ 开头的条目
+        let prefix = format!("{}/", raw_path);
+        let to_remove: Vec<String> = index
+            .entries
+            .keys()
+            .filter(|p| *p == raw_path || p.starts_with(&prefix))
+            .cloned()
+            .collect();
+
+        if to_remove.is_empty() {
+            anyhow::bail!("路径未被跟踪: {}", raw_path);
+        }
+
+        for path in to_remove {
+            index.remove(&path);
+            if !cached {
+                let disk = Path::new(&path);
+                if disk.exists() {
+                    fs::remove_file(disk)?;
+                }
+            }
+            println!("rm '{}'", path);
+            removed += 1;
+        }
+    }
+
+    index.save()?;
+    println!("已移除 {} 个条目", removed);
+    Ok(())
 }
